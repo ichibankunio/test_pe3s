@@ -865,6 +865,36 @@
             return handler;
         }
 
+        function getIOSImagePickHandler() {
+            if (!isIOSDevice()) {
+                return null;
+            }
+            if (!window.webkit || !window.webkit.messageHandlers) {
+                return null;
+            }
+            const handler = window.webkit.messageHandlers.pickImage;
+            if (!handler || typeof handler.postMessage !== "function") {
+                return null;
+            }
+            return handler;
+        }
+
+        function requestNativeImagePick() {
+            const handler = getIOSImagePickHandler();
+            if (!handler) {
+                return false;
+            }
+            try {
+                handler.postMessage({ type: "pickImage" });
+                return true;
+            } catch (error) {
+                console.log("native image pick bridge failed:", error);
+                return false;
+            }
+        }
+
+        window.requestNativeImagePick = requestNativeImagePick;
+
         function blobToDataURL(blob) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -898,11 +928,53 @@
             }
         }
 
+        async function fileFromDataUrl(dataUrl, fileName, mimeType) {
+            const response = await fetch(dataUrl);
+            const blob = await response.blob();
+            const resolvedType = mimeType || blob.type || "image/jpeg";
+            const finalBlob = resolvedType === blob.type ? blob : blob.slice(0, blob.size, resolvedType);
+            return new File([finalBlob], fileName || "selected-image.jpg", { type: resolvedType });
+        }
+
         // Optional callback from native host after PHPhotoLibrary save.
         window.onNativePhotoSaveResult = function(result) {
             hideSaveProgress();
             if (result && result.ok === false) {
                 console.log("native photo save failed:", result.message || "unknown");
+            }
+        };
+
+        // Optional callback from native host after image pick.
+        window.onNativeImagePicked = async function(payload) {
+            if (payload && payload.ok === false) {
+                console.log("native image pick failed:", payload.message || "unknown");
+                return;
+            }
+            const dataUrl = payload && payload.dataUrl;
+            const base64 = payload && payload.base64;
+            const mimeType = payload && payload.mimeType;
+            const fileName = payload && payload.fileName;
+
+            let resolvedDataUrl = dataUrl;
+            if (!resolvedDataUrl && base64) {
+                const resolvedMime = mimeType || "image/jpeg";
+                resolvedDataUrl = "data:" + resolvedMime + ";base64," + base64;
+            }
+            if (!resolvedDataUrl) {
+                console.log("native image pick payload is invalid");
+                return;
+            }
+
+            try {
+                const file = await fileFromDataUrl(resolvedDataUrl, fileName, mimeType);
+                const onNativeImageSelected = window.onNativeImageSelected;
+                if (typeof onNativeImageSelected === "function") {
+                    onNativeImageSelected(file);
+                } else {
+                    console.log("onNativeImageSelected is not available");
+                }
+            } catch (error) {
+                console.log("native image pick conversion failed:", error);
             }
         };
 
